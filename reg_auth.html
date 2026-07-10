@@ -68,8 +68,6 @@ function logToScreen(id, text, clear = false) {
 //  INDEXED DB SETUP
 // ==========================================
 const dbPromise = new Promise((resolve, reject) => {
-    // Note: Version bumped or kept the same. 
-    // Removed the 'config' store creation entirely.
     const request = indexedDB.open('WebAuthnLocalDB', 3);
     
     request.onupgradeneeded = (event) => {
@@ -166,7 +164,7 @@ document.getElementById('registerBtn').addEventListener('click', async () => {
 
         await dbSaveUser(newUserData);
 
-        // Extract AAGUID
+        // Extracting AAGUID
         const authDataBuffer = credential.response.getAuthenticatorData();
         const authData = new Uint8Array(authDataBuffer);
         const aaguidBytes = authData.slice(37, 53);
@@ -174,9 +172,8 @@ document.getElementById('registerBtn').addEventListener('click', async () => {
         const aaguid = `${aaguidHex.slice(0,8)}-${aaguidHex.slice(8,12)}-${aaguidHex.slice(12,16)}-${aaguidHex.slice(16,20)}-${aaguidHex.slice(20)}`;
             
         logToScreen('reg-output', "\nAuthenticator AAGUID: " + aaguid);
-
-       // --- BACKEND DELEGATION ---
-        logToScreen('reg-output', "Sending AAGUID to backend process memory store...");
+-
+        logToScreen('reg-output', "Sending AAGUID to backend...");
         
         try {
             const apiResponse = await fetch('http://localhost:4000/api/lookup-aaguid', {
@@ -185,7 +182,6 @@ document.getElementById('registerBtn').addEventListener('click', async () => {
                 body: JSON.stringify({ aaguid: aaguid })
             });
 
-            // If the backend responds with an error status (like 500 or 503), read the message
             if (!apiResponse.ok) {
                 const errorData = await apiResponse.text();
                 throw new Error(`Backend refused (HTTP ${apiResponse.status}): ${errorData}`);
@@ -195,7 +191,6 @@ document.getElementById('registerBtn').addEventListener('click', async () => {
             logToScreen('reg-output', "Device Model: " + resultData.description);
 
         } catch (apiErr) {
-            // Now it will print the REAL error instead of just "offline"
             console.error("Full Error Details:", apiErr);
             logToScreen('reg-output', `Lookup failed: ${apiErr.message}`);
         }
