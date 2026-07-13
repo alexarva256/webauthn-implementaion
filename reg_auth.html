@@ -32,10 +32,26 @@
   </div>
 </div>
 
+<script src="CBOR.js"></script>
 <script>
 // ==========================================
 //  HELPER FUNCTIONS
 // ==========================================
+
+function formatAsPEM(buffer) {
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    const base64 = window.btoa(binary);
+    
+    // Break the base64 string into lines of 64 characters
+    const formattedB64 = base64.match(/.{1,64}/g).join('\n');
+    
+    return `-----BEGIN CERTIFICATE-----\n${formattedB64}\n-----END CERTIFICATE-----`;
+}
+
 function bufferToBase64url(buffer) {
   return btoa(String.fromCharCode(...new Uint8Array(buffer)))
     .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
@@ -172,7 +188,7 @@ document.getElementById('registerBtn').addEventListener('click', async () => {
         const aaguid = `${aaguidHex.slice(0,8)}-${aaguidHex.slice(8,12)}-${aaguidHex.slice(12,16)}-${aaguidHex.slice(16,20)}-${aaguidHex.slice(20)}`;
             
         logToScreen('reg-output', "\nAuthenticator AAGUID: " + aaguid);
--
+
         logToScreen('reg-output', "Sending AAGUID to backend...");
         
         try {
@@ -201,6 +217,27 @@ document.getElementById('registerBtn').addEventListener('click', async () => {
         const masterKey = await crypto.subtle.importKey(
             'raw', symmetricKey, 'HKDF', false, ['deriveKey']
         );
+
+        const attObj = CBOR.decode(credential.response.attestationObject);
+        console.log("Full Attestation Object:", attObj);
+
+        // --- NEW: Extract and format the certificate chain ---
+        if (attObj.attStmt && attObj.attStmt.x5c) {
+            logToScreen('reg-output', "\n--- X.509 Certificate Chain ---");
+            
+            attObj.attStmt.x5c.forEach((certBuffer, index) => {
+                const pemCert = formatAsPEM(certBuffer);
+                
+                // Log to console for easy copying
+                console.log(`Certificate [${index}]:\n`, pemCert);
+                
+                // Print to the screen UI
+                logToScreen('reg-output', `\nCertificate [${index}]:\n${pemCert}`);
+            });
+        } else {
+            logToScreen('reg-output', "\nNo certificate chain (x5c) found in this attestation statement.");
+        }
+        // -----------------------------------------------------
 
         const aesKey = await crypto.subtle.deriveKey(
             { name: 'HKDF', salt: new Uint8Array(), hash: 'SHA-256', info: new TextEncoder().encode('AES-GCM Vault Encryption Key V1') },
