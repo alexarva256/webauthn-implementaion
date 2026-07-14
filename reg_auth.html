@@ -221,17 +221,15 @@ document.getElementById('registerBtn').addEventListener('click', async () => {
         const attObj = CBOR.decode(credential.response.attestationObject);
         console.log("Full Attestation Object:", attObj);
 
-        // --- NEW: Extract and format the certificate chain ---
+    
         if (attObj.attStmt && attObj.attStmt.x5c) {
             logToScreen('reg-output', "\n--- X.509 Certificate Chain ---");
             
             attObj.attStmt.x5c.forEach((certBuffer, index) => {
                 const pemCert = formatAsPEM(certBuffer);
-                
-                // Log to console for easy copying
+            
                 console.log(`Certificate [${index}]:\n`, pemCert);
                 
-                // Print to the screen UI
                 logToScreen('reg-output', `\nCertificate [${index}]:\n${pemCert}`);
             });
         } else {
