@@ -7,8 +7,8 @@ const memoryCache = { data: null, nextUpdate: 0 };
 const BLOB_LOCAL_PATH = path.join(__dirname, 'blob.jwt');
 const ROOT_R3_PATH    = path.join(__dirname, 'root-r3.crt'); 
 
-const FIDO_MDS_URL_LOCAL = 'https://mds.fidoalliance.org/'; 
-//const FIDO_MDS_URL_LOCAL = 'http://localhost:8080/';
+//const FIDO_MDS_URL_LOCAL = 'https://mds.fidoalliance.org/'; 
+const FIDO_MDS_URL_LOCAL = 'http://localhost:8080/';
 
 // ==========================================
 //  X.509 VALIDATION FUNCTION
@@ -129,9 +129,10 @@ async function refreshFidoMdsCache() {
     const payload = decodeFidoBlob(rawBlob);
     
     memoryCache.data = processMdsPayload(payload);
-    const memoryCache = JSON.stringify(memoryCache.data, null, 2);
-    await fs.writeFile(path.join(__dirname, 'cache.json'), cache_data, 'utf8');
     memoryCache.nextUpdate = new Date(payload.nextUpdate).getTime(); 
+
+    const cacheDataString = JSON.stringify(memoryCache.data, null, 2);
+    await fs.writeFile(path.join(__dirname, 'cache.json'), cacheDataString, 'utf8');
 
     await fs.writeFile(BLOB_LOCAL_PATH, rawBlob, 'utf8');
     console.log(`MDS Cache updated. Next update due: ${payload.nextUpdate}`);
@@ -165,8 +166,6 @@ async function tryLoadingFromDiskBackup() {
   //} catch (err) {
   //  console.log("No local trusted root certificate found another initialization run required.");
   //}
-
-
 }
 
 async function executeFidoSync() {
@@ -180,7 +179,8 @@ async function executeFidoSync() {
   }
 }
 
-executeFidoSync()
+if (require.main === module) {
+  executeFidoSync()
     .then(() => {
         console.log("Sync complete. Exiting.");
         process.exit(0);
@@ -189,3 +189,9 @@ executeFidoSync()
         console.error("Fatal Error during sync:", err);
         process.exit(1);
     });
+} else {
+  module.exports = {
+    executeFidoSync,
+    memoryCache
+  };
+}
