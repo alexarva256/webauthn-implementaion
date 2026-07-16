@@ -2,9 +2,8 @@ const fs     = require('fs').promises;
 const path   = require('path');
 const crypto = require('crypto'); 
 
-let memoryCache = { data: null, nextUpdate: 0 };
+const memoryCache = { data: null, nextUpdate: 0 };
 
-//const BLOB_LOCAL_PATH = path.join(__dirname, '../cert_and_data', 'blob.jwt');
 const BLOB_LOCAL_PATH = path.join(__dirname, 'blob.jwt');
 const ROOT_R3_PATH    = path.join(__dirname, 'root-r3.crt'); 
 
@@ -80,7 +79,6 @@ async function validateBlobAuthenticity(rawBlob) {
     console.log("Validating MDS Blob x5c chain against root-r3.crt...");
     
     const leafCert = validateFidoMdsChain(header.x5c, trustedRoot.raw);
-    console.log("MDS Blob certificate chain is valid!");
 
     const dataToVerify = Buffer.from(`${parts[0]}.${parts[1]}`);
     const signature = Buffer.from(parts[2], 'base64url');
@@ -131,6 +129,8 @@ async function refreshFidoMdsCache() {
     const payload = decodeFidoBlob(rawBlob);
     
     memoryCache.data = processMdsPayload(payload);
+    const memoryCache = JSON.stringify(memoryCache.data, null, 2);
+    await fs.writeFile(path.join(__dirname, 'cache.json'), cache_data, 'utf8');
     memoryCache.nextUpdate = new Date(payload.nextUpdate).getTime(); 
 
     await fs.writeFile(BLOB_LOCAL_PATH, rawBlob, 'utf8');
