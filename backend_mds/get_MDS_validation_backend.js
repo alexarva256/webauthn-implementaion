@@ -1,15 +1,15 @@
-const http   = require('http');
 const fs     = require('fs').promises;
 const path   = require('path');
 const crypto = require('crypto'); 
 
-// Cache will hold the mapped AAGUIDs and the next required update time
 let memoryCache = { data: null, nextUpdate: 0 };
 
-const BLOB_LOCAL_PATH = path.join(__dirname, 'blob.jwt');
-//const FIDO_MDS_URL = 'https://mds.fidoalliance.org/'; 
-const FIDO_MDS_URL_LOCAL = 'http://localhost:8080/';
+//const BLOB_LOCAL_PATH = path.join(__dirname, '../cert_and_data', 'blob.jwt');
+const BLOB_LOCAL_PATH = path.join(__dirname, '../cert_and_data', 'blob.jwt');
+const ROOT_R3_PATH    = path.join(__dirname, '../cert_and_data', 'root-r3.crt'); 
 
+const FIDO_MDS_URL_LOCAL = 'https://mds.fidoalliance.org/'; 
+//const FIDO_MDS_URL_LOCAL = 'http://localhost:8080/';
 
 // ==========================================
 //  X.509 VALIDATION FUNCTION
@@ -22,7 +22,6 @@ function validateFidoMdsChain(x5cArray, rootDerBuffer) {
       return new crypto.X509Certificate(derBuffer);
   });
 
-  // Load the authenticator's specific Root CA from the MDS cache
   const trustedRoot = new crypto.X509Certificate(rootDerBuffer);
   chain.push(trustedRoot);
 
@@ -34,7 +33,6 @@ function validateFidoMdsChain(x5cArray, rootDerBuffer) {
       const validFrom = new Date(currentCert.validFrom).getTime();
       const validTo = new Date(currentCert.validTo).getTime();
 
-      // WebAuthn Quirk: Ignore expiration dates on the hardware's leaf certificate (i === 0)
       if (i > 0) {
           if (now < validFrom || now > validTo) {
               throw new Error(`Certificate expired or not yet valid: ${currentCert.subject}`);
@@ -45,14 +43,13 @@ function validateFidoMdsChain(x5cArray, rootDerBuffer) {
           throw new Error(`Signature validation failed: ${currentCert.subject}`);
       }
 
-      // If it's an intermediate, ensure it's a CA
       if (i > 0 && !currentCert.ca) {
           throw new Error(`Intermediate certificate is not a valid CA: ${currentCert.subject}`);
       }
   }
 
   if (chain[chain.length - 1].fingerprint256 !== trustedRoot.fingerprint256) {
-      throw new Error("Chain does not terminate at the expected Authenticator Root CA.");
+      throw new Error("Chain does not terminate at the expected Root CA.");
   }
 
   return chain[0]; 
@@ -61,9 +58,50 @@ function validateFidoMdsChain(x5cArray, rootDerBuffer) {
 // ==========================================
 //  FIDO MDS BLOB LOGIC
 // ==========================================
+async function validateBlobAuthenticity(rawBlob) {
+    const parts = rawBlob.trim().split('.');
+    if (parts.length !== 3) throw new Error("Invalid JWT BLOB format.");
+
+    const headerBuffer = Buffer.from(parts[0], 'base64url');
+    const header = JSON.parse(headerBuffer.toString('utf8'));
+
+    if (!header.x5c || !Array.isArray(header.x5c) || header.x5c.length === 0) {
+        throw new Error("MDS Blob header is missing the x5c certificate chain.");
+    }
+
+    let rootPem;
+    try {
+        rootPem = await fs.readFile(ROOT_R3_PATH);
+    } catch (err) {
+        throw new Error(`Could not read root-r3.crt. Details: ${err.message}`);
+    }
+    const trustedRoot = new crypto.X509Certificate(rootPem);
+
+    console.log("Validating MDS Blob x5c chain against root-r3.crt...");
+    
+    const leafCert = validateFidoMdsChain(header.x5c, trustedRoot.raw);
+    console.log("MDS Blob certificate chain is valid!");
+
+    const dataToVerify = Buffer.from(`${parts[0]}.${parts[1]}`);
+    const signature = Buffer.from(parts[2], 'base64url');
+    
+    const isValidSignature = crypto.verify(
+        'RSA-SHA256', 
+        dataToVerify,
+        leafCert.publicKey,
+        signature
+    );
+    
+    if (!isValidSignature) {
+        const altVerify = crypto.createVerify('SHA256').update(dataToVerify).verify(leafCert.publicKey, signature);
+        if (!altVerify) throw new Error("MDS Blob JWT signature verification failed! File may be tampered with.");
+    }
+    
+    console.log("MDS Blob cryptographic signature verified successfully!");
+}
+
 function decodeFidoBlob(rawBlob) {
   const parts = rawBlob.trim().split('.');
-  if (parts.length !== 3) throw new Error("Invalid JWT BLOB format.");
   const payloadBuffer = Buffer.from(parts[1], 'base64url');
   return JSON.parse(payloadBuffer.toString('utf8'));
 }
@@ -73,7 +111,6 @@ function processMdsPayload(payload) {
   if (payload.entries && Array.isArray(payload.entries)) {
     payload.entries.forEach(entry => {
       if (entry.aaguid) {
-        // Map the AAGUID directly to its full metadata statement
         map[entry.aaguid] = entry.metadataStatement;
       }
     });
@@ -84,11 +121,13 @@ function processMdsPayload(payload) {
 async function refreshFidoMdsCache() {
   console.log("Fetching latest FIDO MDS Blob...");
   try {
-    //const response = await fetch(FIDO_MDS_URL); // Use the real FIDO MDS URL in production
-    const response = await fetch(FIDO_MDS_URL_LOCAL); // Use the local mock server for testing
+    const response = await fetch(FIDO_MDS_URL_LOCAL); 
     if (!response.ok) throw new Error(`MDS responded with HTTP ${response.status}`);
 
     const rawBlob = await response.text(); 
+    
+    await validateBlobAuthenticity(rawBlob);
+
     const payload = decodeFidoBlob(rawBlob);
     
     memoryCache.data = processMdsPayload(payload);
@@ -97,7 +136,7 @@ async function refreshFidoMdsCache() {
     await fs.writeFile(BLOB_LOCAL_PATH, rawBlob, 'utf8');
     console.log(`MDS Cache updated. Next update due: ${payload.nextUpdate}`);
   } catch (error) {
-      console.error("Fetch failed:", error.message); 
+      console.error("Fetch/Validation failed:", error.message); 
       if (!memoryCache.data) await tryLoadingFromDiskBackup();
   }
 }
@@ -106,7 +145,6 @@ async function tryLoadingFromDiskBackup() {
   try {
     const rawBlob = await fs.readFile(BLOB_LOCAL_PATH, 'utf8');
     const payload = decodeFidoBlob(rawBlob);
-    
     memoryCache.data = processMdsPayload(payload);
     memoryCache.nextUpdate = new Date(payload.nextUpdate).getTime();
     console.log("Loaded MDS blob from local disk.");
@@ -115,111 +153,24 @@ async function tryLoadingFromDiskBackup() {
   }
 }
 
-async function initializeFidoBackendStore() {
+async function executeFidoSync() {
+  console.log("Starting FIDO MDS Sync...");
   await tryLoadingFromDiskBackup();
+  
   if (!memoryCache.data || Date.now() >= memoryCache.nextUpdate) {
     await refreshFidoMdsCache();
+  } else {
+    console.log("Local MDS blob is still fresh. No download required.");
   }
 }
 
-initializeFidoBackendStore();
-
-// ==========================================
-//  SERVER ROUTING
-// ==========================================
-const server = http.createServer(async (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  res.setHeader('Access-Control-Allow-Methods', 'OPTIONS, POST');
-
-  if (req.method === 'OPTIONS') {
-    res.writeHead(200);
-    return res.end();
-  }
-
-  if (req.method === 'POST') {
-    let body = '';
-    req.on('data', chunk => { body += chunk; });
-    
-    req.on('end', () => {
-      let parsedBody;
-      try {
-        parsedBody = JSON.parse(body);
-      } catch (err) {
-        res.writeHead(400, { 'Content-Type': 'text/plain' });
-        return res.end('Invalid JSON payload');
-      }
-
-      // --- ROUTE: AAGUID LOOKUP ---
-      if (req.url === '/api/lookup-aaguid') {
-        const { aaguid } = parsedBody;
-
-        if (!memoryCache.data) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          return res.end(JSON.stringify({ error: 'Store uninitialized' }));
-        }
-
-        const matchedDevice = memoryCache.data[aaguid];
-        const description = matchedDevice?.description || "Unknown Authenticator";
-
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify({ description }));
-      }
-      
-      // --- ROUTE: REGISTRATION VALIDATION ---
-      else if (req.url === '/api/register') {
-        const { username, credentialId, x5c, aaguid } = parsedBody;
-
-        if (!x5c || !Array.isArray(x5c) || x5c.length === 0) {
-            res.writeHead(400, { 'Content-Type': 'text/plain' });
-            return res.end("Missing x5c certificate chain.");
-        }
-
-        if (!aaguid) {
-            res.writeHead(400, { 'Content-Type': 'text/plain' });
-            return res.end("Missing aaguid in payload.");
-        }
-
-        // 1. Look up the device in the MDS Cache
-        const deviceMetadata = memoryCache.data[aaguid];
-        if (!deviceMetadata) {
-            res.writeHead(403, { 'Content-Type': 'text/plain' });
-            return res.end(`Unknown AAGUID (${aaguid}). Device not found in FIDO registry.`);
-        }
-
-        // 2. Extract the device's specific Root CA from the metadata
-        const rootCerts = deviceMetadata.attestationRootCertificates;
-        if (!rootCerts || rootCerts.length === 0) {
-            res.writeHead(500, { 'Content-Type': 'text/plain' });
-            return res.end("MDS missing Root CA for this device.");
-        }
-
-        try {
-            // 3. FIDO MDS stores roots as Base64 strings. Convert to binary buffer.
-            const authenticatorRootDer = Buffer.from(rootCerts[0], 'base64');
-
-            // 4. Validate the browser's chain against the device's true Root CA!
-            const leafCert = validateFidoMdsChain(x5c, authenticatorRootDer);
-            console.log(`[Success] Validated attestation chain for: ${leafCert.subject}`);
-            console.log(`[Device Name] ${deviceMetadata.description}`);
-            
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            return res.end(JSON.stringify({ message: "Registration & Cryptographic Validation successful!" }));
-        } catch (error) {
-            console.error("[Security] Certificate Validation Error:", error.message);
-            res.writeHead(403, { 'Content-Type': 'text/plain' });
-            return res.end(`Security Check Failed: ${error.message}`);
-        }
-      } 
-      else {
-        res.writeHead(404);
-        return res.end();
-      }
+// Run the script and exit
+executeFidoSync()
+    .then(() => {
+        console.log("✅ Sync complete. Exiting.");
+        process.exit(0);
+    })
+    .catch(err => {
+        console.error("❌ Fatal Error during sync:", err);
+        process.exit(1);
     });
-  } else {
-    res.writeHead(404);
-    res.end();
-  }
-});
-
-server.listen(4000, () => console.log('Backend listening on http://localhost:4000'));

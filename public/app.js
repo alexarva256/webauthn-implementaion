@@ -188,44 +188,44 @@ document.getElementById('registerBtn').addEventListener('click', async () => {
         console.log("Full Attestation Object:", attObj);
 
     
-        if (attObj.attStmt && attObj.attStmt.x5c) {
-            logToScreen('reg-output', "\nExtracting X.509 chain...");
-
-            // 1. Convert the ArrayBuffers to standard Base64 strings
-            // Note: X.509 uses standard Base64, not URL-safe Base64!
-            const x5cBase64Strings = attObj.attStmt.x5c.map(certBuffer => {
-                let binary = '';
-                const bytes = new Uint8Array(certBuffer);
-                for (let i = 0; i < bytes.byteLength; i++) {
-                    binary += String.fromCharCode(bytes[i]);
-                }
-                return window.btoa(binary); // Standard browser base64 encoder
-            });
-        
-            logToScreen('reg-output', "Sending chain to backend for secure validation...");
-        
-            // 2. Send the extracted strings to your Node.js backend
-            const verifyResponse = await fetch('http://localhost:4000/api/register', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    username: username,
-                    credentialId: credential.id,
-                    x5c: x5cBase64Strings,
-                    aaguid: aaguid 
-                })
-            });
-        
-            if (!verifyResponse.ok) {
-                const errorText = await verifyResponse.text();
-                throw new Error(`Backend validation failed: ${errorText}`);
-            }
-        
-            const result = await verifyResponse.json();
-            logToScreen('reg-output', `\n✅ ${result.message}`);
-        } else {
-            logToScreen('reg-output', "\nNo certificate chain (x5c) found in this attestation statement.");
-        }
+        //if (attObj.attStmt && attObj.attStmt.x5c) {
+        //    logToScreen('reg-output', "\nExtracting X.509 chain...");
+        //
+        //    // 1. Convert the ArrayBuffers to standard Base64 strings
+        //    // Note: X.509 uses standard Base64, not URL-safe Base64!
+        //    const x5cBase64Strings = attObj.attStmt.x5c.map(certBuffer => {
+        //        let binary = '';
+        //        const bytes = new Uint8Array(certBuffer);
+        //        for (let i = 0; i < bytes.byteLength; i++) {
+        //            binary += String.fromCharCode(bytes[i]);
+        //        }
+        //        return window.btoa(binary); // Standard browser base64 encoder
+        //    });
+        //
+        //    logToScreen('reg-output', "Sending chain to backend for secure validation...");
+        //
+        //    // 2. Send the extracted strings to your Node.js backend
+        //    const verifyResponse = await fetch('http://localhost:4000/api/register', {
+        //        method: 'POST',
+        //        headers: { 'Content-Type': 'application/json' },
+        //        body: JSON.stringify({
+        //            username: username,
+        //            credentialId: credential.id,
+        //            x5c: x5cBase64Strings,
+        //            aaguid: aaguid 
+        //        })
+        //    });
+        //
+        //    if (!verifyResponse.ok) {
+        //        const errorText = await verifyResponse.text();
+        //        throw new Error(`Backend validation failed: ${errorText}`);
+        //    }
+        //
+        //    const result = await verifyResponse.json();
+        //    logToScreen('reg-output', `\n✅ ${result.message}`);
+        //} else {
+        //    logToScreen('reg-output', "\nNo certificate chain (x5c) found in this attestation statement.");
+        //}
 
 
                 // -----------------------------------------------------
