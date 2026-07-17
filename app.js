@@ -1,4 +1,7 @@
 // app.js
+
+import * as cbor from 'cbor';
+
 // ==========================================
 //  HELPER FUNCTIONS
 // ==========================================
@@ -177,7 +180,7 @@ document.getElementById('registerBtn').addEventListener('click', async () => {
             'raw', symmetricKey, 'HKDF', false, ['deriveKey']
         );
 
-        const attObj = CBOR.decode(credential.response.attestationObject);
+        const attObj = cbor.decodeFirstSync(new Uint8Array(credential.response.attestationObject));
         console.log("Full Attestation Object:", attObj);
 
         if (attObj.attStmt && attObj.attStmt.x5c) {
