@@ -26,49 +26,38 @@ function validateFidoMdsChain(x5cArray, rootDerBuffer) {
 
     const now = Date.now();
 
-    // 1. Verify Date Validity for ALL certificates (including the root)
     for (let i = 0; i < chain.length; i++) {
         const cert = chain[i];
         const validFrom = new Date(cert.validFrom).getTime();
         const validTo = new Date(cert.validTo).getTime();
 
-        // If you specifically want to ignore leaf expiration because of the MDS nextUpdate rule, 
-        // change this to: if (i > 0 && (now < validFrom || now > validTo))
         if (now < validFrom || now > validTo) {
             throw new Error(`Certificate expired or not yet valid: ${cert.subject}`);
         }
     }
 
-    // 2. Verify Chain Links (Issuer matching, Signatures, and CA constraints)
     for (let i = 0; i < chain.length - 1; i++) {
         const currentCert = chain[i];
         const issuerCert = chain[i + 1];
 
-        // Ensure the chain structurally links
         if (currentCert.issuer !== issuerCert.subject) {
             throw new Error(`Chain broken: ${currentCert.subject} was not issued by ${issuerCert.subject}`);
         }
 
-        // Ensure the cryptographic math checks out
         if (!currentCert.verify(issuerCert.publicKey)) {
             throw new Error(`Signature validation failed for: ${currentCert.subject}`);
         }
 
-        // Ensure intermediates are actually authorized Certificate Authorities
         if (i > 0) {
             if (!currentCert.ca) {
                 throw new Error(`Intermediate certificate is not a CA: ${currentCert.subject}`);
             }
-            // Check Key Usage extension for 'keyCertSign' capability
-            if (!currentCert.checkIssued(currentCert)) { 
-                // Node's checkIssued method verifies if the parent has the authority to issue certs.
-                // Note: We use checkIssued(currentCert) on itself as a quick way to check if it has keyCertSign.
-                // A better native check in Node 18+ is looking at the keyUsage extension directly if needed.
+            if (!currentCert.keyUsage.includes('keyCertSign')) {
+                throw new Error(`Intermediate certificate does not have keyCertSign usage: ${currentCert.subject}`);
             }
         }
     }
 
-    // 3. Ensure we anchored successfully to our trusted root
     if (chain[chain.length - 1].fingerprint256 !== trustedRoot.fingerprint256) {
         throw new Error("Chain does not terminate at the expected Root CA.");
     }
