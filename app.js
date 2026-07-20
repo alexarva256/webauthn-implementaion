@@ -27,6 +27,11 @@ const Utils = {
 	}
 };
 
+function clearLogs(logId) {
+    const logElement = document.getElementById(logId);
+    if (logElement) logElement.innerHTML = '';
+}
+
 /**
 *  INDEXED DB
 */
@@ -76,8 +81,9 @@ const CryptoManager = {
 	 * @param {ArrayBuffer} prfOutput 
 	 */
 	async deriveVaultKey(prfOutput) {
-		if (!prfOutput) throw new Error("PRF is not supported or was not enabled on this device.");
-
+		if (!prfOutput) {
+			throw new Error("PRF is not supported or was not enabled on this device.")
+		};
 		const masterKey = await crypto.subtle.importKey(
 			'raw', prfOutput, 'HKDF', false, ['deriveKey']
 		);
@@ -128,10 +134,13 @@ const BackendAPI = {
 */
 
 async function handleRegistration(username) {
+
 	const logId = 'reg-output';
+	clearLogs(logId);
+	Utils.log(logId, "Starting Registration...");
 	//Utils.log(logId, "Checking database for existing keys...", true);
 
-	const existingUser = await Database.getUser(username);
+	//const existingUser = await Database.getUser(username);
 	//const excludeCredentials = existingUser?.credentialId
 	//    ? [{ type: "public-key", id: Utils.base64URLStringToBuffer(existingUser.credentialId) }]
 	//    : [];
@@ -176,15 +185,37 @@ await Database.saveUser({
     Utils.log(logId, `Backend: ${backendResponse.message}`);
 
 	Utils.log(logId, "Deriving AES-GCM Vault Key from PRF...");
-	const prfResults = credential.getClientExtensionResults()?.prf?.results?.first;
-	const aesKey = await CryptoManager.deriveVaultKey(prfResults);
+	const prfResults = credential.getClientExtensionResults()?.prf;
 
-	console.log("Success! Your AES Key Object:", aesKey);
-	Utils.log(logId, "Registration Complete!");
+	if (prfResults && prfResults.enabled) {
+	
+	    if (prfResults.results && prfResults.results.first) {
+	        console.log("Success: PRF output generated during registration.");
+	        const prfOutput = prfResults.results.first;
+			const aesKey = await CryptoManager.deriveVaultKey(prfOutput);
+			console.log("Success! Your AES Key Object:", aesKey);
+			Utils.log(logId, "Registration Complete!");
+	    } 
+		else {
+			Utils.log(logId, "PRF extension is enabled but authenticators does not support PRF on creation.");
+			Utils.log(logId, "Need to initiate Login...");
+			await handleLogin(true);
+		}
+
+	} else {
+	    console.error("This authenticator does not support the PRF extension.");
+		await handleLogin(); 
+	}
 }
 
-async function handleLogin() {
-	const logId = 'login-output';
+async function handleLogin(isFallback = false) {
+    const logId = 'login-output';
+    
+    if (!isFallback) {
+        clearLogs(logId);
+    }
+	Utils.log(logId, isFallback ? "Continuing to PRF evaluation..." : "Starting Login...");
+
 	Utils.log(logId, "Setting up challenge...", true);
 
 	const encryptionSalt = Utils.generateChallenge();
