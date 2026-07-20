@@ -1,105 +1,142 @@
-// app.js
-// ==========================================
-//  HELPER FUNCTIONS
-// ==========================================
-function formatAsPEM(buffer) {
-	let binary = '';
-	const bytes = new Uint8Array(buffer);
-	for (let i = 0; i < bytes.byteLength; i++) {
-		binary += String.fromCharCode(bytes[i]);
+/**
+ * UTILITIES & FORMATTING
+*/
+const Utils = {
+	bufferToBase64url(buffer) {
+		return btoa(String.fromCharCode(...new Uint8Array(buffer)))
+			.replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+	},
+
+	base64URLStringToBuffer(base64URLString) {
+		const base64 = base64URLString.replace(/-/g, '+').replace(/_/g, '/');
+		const padLen = (4 - (base64.length % 4)) % 4;
+		const padded = base64.padEnd(base64.length + padLen, '=');
+		const binary = atob(padded);
+		return Uint8Array.from(binary, c => c.charCodeAt(0)).buffer;
+	},
+
+	generateChallenge() {
+		return window.crypto.getRandomValues(new Uint8Array(32));
+	},
+
+	log(id, text, clear = false) {
+		const output = document.getElementById(id);
+		if (!output) return;
+		if (clear) output.innerText = "";
+		output.innerText += text + "\n";
 	}
-	const base64 = window.btoa(binary);
-	const formattedB64 = base64.match(/.{1,64}/g).join('\n');
-	return `-----BEGIN CERTIFICATE-----\n${formattedB64}\n-----END CERTIFICATE-----`;
-}
+};
 
-function bufferToBase64url(buffer) {
-  return btoa(String.fromCharCode(...new Uint8Array(buffer)))
-	.replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
-}
+/**
+*  STORAGE (INDEXED DB)
+*/
+const Database = {
+	async getDB() {
+		return new Promise((resolve, reject) => {
+			const request = indexedDB.open('WebAuthnLocalDB', 3);
+			request.onupgradeneeded = (e) => {
+				const db = e.target.result;
+				if (!db.objectStoreNames.contains('users')) {
+					db.createObjectStore('users', { keyPath: 'username' });
+				}
+			};
+			request.onsuccess = () => resolve(request.result);
+			request.onerror = () => reject(request.error);
+		});
+	},
 
-function base64URLStringToBuffer(base64URLString) {
-	const base64 = base64URLString.replace(/-/g, '+').replace(/_/g, '/');
-	const padLen = (4 - (base64.length % 4)) % 4;
-	const padded = base64.padEnd(base64.length + padLen, '=');
-	const binary = atob(padded);
-	const buffer = new Uint8Array(binary.length);
-	for (let i = 0; i < binary.length; i++) {
-		buffer[i] = binary.charCodeAt(i);
-	}
-	return buffer;
-}
+	async saveUser(userData) {
+		const db = await this.getDB();
+		return new Promise((resolve, reject) => {
+			const transaction = db.transaction('users', 'readwrite');
+			transaction.objectStore('users').put(userData);
+			transaction.oncomplete = resolve;
+			transaction.onerror = reject;
+		});
+	},
 
-function generateRandomChallenge() {
-	return window.crypto.getRandomValues(new Uint8Array(32));
-}
-
-function logToScreen(id, text, clear = false) {
-	const output = document.getElementById(id);
-	if (!output) return;
-	if (clear) output.innerText = "";
-	output.innerText += text + "\n";
-}
-
-// ==========================================
-//  INDEXED DB SETUP
-// ==========================================
-const dbPromise = new Promise((resolve, reject) => {
-	const request = indexedDB.open('WebAuthnLocalDB', 3);
-
-	request.onupgradeneeded = (event) => {
-		const db = event.target.result;
-		if (!db.objectStoreNames.contains('users')) {
-			db.createObjectStore('users', { keyPath: 'username' });
-		}
-	};
-
-	request.onsuccess = () => resolve(request.result);
-	request.onerror = () => reject(request.error);
-});
-
-async function dbSaveUser(userData) {
-	const db = await dbPromise;
-	return new Promise((resolve, reject) => {
-		const transaction = db.transaction('users', 'readwrite');
-		const store = transaction.objectStore('users');
-		store.put(userData);
-		transaction.oncomplete = resolve;
-		transaction.onerror = reject;
-	});
-}
-
-async function dbGetUser(username) {
-	const db = await dbPromise;
-	return new Promise((resolve, reject) => {
-		const transaction = db.transaction('users', 'readonly');
-		const store = transaction.objectStore('users');
-		const request = store.get(username);
-		request.onsuccess = () => resolve(request.result);
-		request.onerror = reject;
-	});
-}
-
-// ==========================================
-//  REGISTRATION LOGIC
-// ==========================================
-document.getElementById('registerBtn').addEventListener('click', async () => {
-	const username = document.getElementById('reg-username').value;
-	if (!username) return alert("Enter a username to register.");
-
-	logToScreen('reg-output', "Checking database for existing keys...", true);
-
-	const existingUser = await dbGetUser(username);
-	const excludeCredentials = [];
-
-	if (existingUser && existingUser.credentialId) {
-		excludeCredentials.push({
-			type: "public-key",
-			id: base64URLStringToBuffer(existingUser.credentialId)
+	async getUser(username) {
+		const db = await this.getDB();
+		return new Promise((resolve, reject) => {
+			const transaction = db.transaction('users', 'readonly');
+			const request = transaction.objectStore('users').get(username);
+			request.onsuccess = () => resolve(request.result);
+			request.onerror = reject;
 		});
 	}
+};
 
-	const encryptionSalt = generateRandomChallenge();
+/**
+*  CRYPTOGRAPHY
+*/
+
+const CryptoManager = {
+	/**
+	 * Derives an AES-GCM encryption key from the WebAuthn PRF output.
+	 * @param {ArrayBuffer} prfOutput - The symmetric key material from the authenticator.
+	 */
+	async deriveVaultKey(prfOutput) {
+		if (!prfOutput) throw new Error("PRF is not supported or was not enabled on this device.");
+
+		const masterKey = await crypto.subtle.importKey(
+			'raw', prfOutput, 'HKDF', false, ['deriveKey']
+		);
+
+		const aesKey = await crypto.subtle.deriveKey(
+			{
+				name: 'HKDF',
+				salt: new Uint8Array(),
+				hash: 'SHA-256',
+				info: new TextEncoder().encode('AES-GCM Vault Encryption Key V1')
+			},
+			masterKey,
+			{ name: 'AES-GCM', length: 256 },
+			false,
+			['encrypt', 'decrypt']
+		);
+
+		return aesKey;
+	}
+};
+
+/**
+*  BACKEND API CALLS
+*/
+
+const BackendAPI = {
+	/**
+	 * Sends the authenticator payload to the server for MDS verification.
+	 */
+
+	async verifyRegistration(payload) {
+		const response = await fetch('http://localhost:4000/api/register', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(payload)
+		});
+
+		if (!response.ok) {
+			const errorText = await response.text();
+			throw new Error(`Backend validation failed: ${errorText}`);
+		}
+		return await response.json();
+	}
+};
+
+/**
+*  WEBAUTHN ORCHESTRATION
+*/
+
+async function handleRegistration(username) {
+	const logId = 'reg-output';
+	//Utils.log(logId, "Checking database for existing keys...", true);
+
+	const existingUser = await Database.getUser(username);
+	//const excludeCredentials = existingUser?.credentialId
+	//    ? [{ type: "public-key", id: Utils.base64URLStringToBuffer(existingUser.credentialId) }]
+	//    : [];
+	//
+	const encryptionSalt = Utils.generateChallenge();
 
 	const publicKey = {
 		rp: { name: "Local DB Lab", id: window.location.hostname },
@@ -108,197 +145,105 @@ document.getElementById('registerBtn').addEventListener('click', async () => {
 			name: username,
 			displayName: username,
 		},
-		challenge: generateRandomChallenge(),
-		pubKeyCredParams: [
-			{ type: "public-key", alg: -7 },
-			{ type: "public-key", alg: -257 }
-		],
-		excludeCredentials: excludeCredentials,
+		challenge: Utils.generateChallenge(),
+		pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
+		//excludeCredentials,
 		authenticatorSelection: { residentKey: "preferred", userVerification: "preferred" },
 		timeout: 60000,
 		attestation: "direct",
-		extensions: { prf: { eval: {first: encryptionSalt} } }
+		extensions: { prf: { eval: { first: encryptionSalt } } }
 	};
 
+	Utils.log(logId, "Tap your YubiKey...");
+	const credential = await navigator.credentials.create({ publicKey });
+
+await Database.saveUser({
+        username: username,
+        credentialId: credential.id,
+        publicKey: Utils.bufferToBase64url(credential.response.getPublicKey())
+    });
+    Utils.log(logId, "\nSaved to IndexedDB!");
+
+    Utils.log(logId, "Sending raw attestation data to backend for secure decoding and validation...");
+    
+    const backendResponse = await BackendAPI.verifyRegistration({
+        username,
+        credentialId: credential.id,
+        clientDataJSON: Utils.bufferToBase64url(credential.response.clientDataJSON),
+        attestationObject: Utils.bufferToBase64url(credential.response.attestationObject)
+    });
+    
+    Utils.log(logId, `Backend: ${backendResponse.message}`);
+
+	Utils.log(logId, "Deriving AES-GCM Vault Key from PRF...");
+	const prfResults = credential.getClientExtensionResults()?.prf?.results?.first;
+	const aesKey = await CryptoManager.deriveVaultKey(prfResults);
+
+	console.log("Success! Your AES Key Object:", aesKey);
+	Utils.log(logId, "Registration Complete!");
+}
+
+async function handleLogin() {
+	const logId = 'login-output';
+	Utils.log(logId, "Setting up challenge...", true);
+
+	const encryptionSalt = Utils.generateChallenge();
+
+	const publicKeyRequest = {
+		challenge: Utils.generateChallenge(),
+		timeout: 60000,
+		rpId: window.location.hostname,
+		userVerification: "preferred",
+		extensions: { prf: { eval: { first: encryptionSalt } } }
+	};
+
+	Utils.log(logId, "Tap your YubiKey...");
+	const assertion = await navigator.credentials.get({ publicKey: publicKeyRequest });
+
+	const userHandle = assertion.response.userHandle;
+	if (!userHandle) throw new Error("No user handle found on this credential.");
+	const identifiedUsername = new TextDecoder().decode(userHandle);
+	Utils.log(logId, `Key identifies as: "${identifiedUsername}"`);
+
+	//const dbUser = await Database.getUser(identifiedUsername);
+	//if (!dbUser) {
+	//	if (window.PublicKeyCredential?.signalUnknownCredential) {
+	//		await PublicKeyCredential.signalUnknownCredential({ rpId: window.location.hostname, credentialId: assertion.id })
+	//			.catch(err => console.error("Signal API failed:", err));
+	//	}
+	//	throw new Error(`SECURITY ALERT: User "${identifiedUsername}" not found. Access Denied.`);
+	//}
+
+	Utils.log(logId, "Deriving AES-GCM Vault Key...");
+	const prfResults = assertion.getClientExtensionResults()?.prf?.results?.first;
+	const aesKey = await CryptoManager.deriveVaultKey(prfResults);
+
+	console.log("Recovered AES Key Object:", aesKey);
+	Utils.log(logId, "\nLOGIN SUCCESSFUL!");
+	Utils.log(logId, `Welcome back, ${identifiedUsername}`);
+}
+
+/**
+ *  UI EVENT LISTENERS
+*/
+
+document.getElementById('registerBtn').addEventListener('click', async () => {
+	const username = document.getElementById('reg-username').value.trim();
+	if (!username) return alert("Enter a username to register.");
+
 	try {
-		logToScreen('reg-output', "Tap your YubiKey...");
-		const credential = await navigator.credentials.create({ publicKey });
-
-		const prfResults = credential.getClientExtensionResults();
-		let symmetricKey;
-
-		if (prfResults.prf && prfResults.prf.results) {
-			symmetricKey = prfResults.prf.results.first;
-		} else {
-			throw new Error('PRF is not supported or was not enabled on this device.');
-		}
-
-		const newUserData = {
-			username: username,
-			credentialId: credential.id,
-			publicKey: bufferToBase64url(credential.response.getPublicKey())
-		};
-
-		await dbSaveUser(newUserData);
-
-		const authDataBuffer = credential.response.getAuthenticatorData();
-		const authData = new Uint8Array(authDataBuffer);
-		const aaguidBytes = authData.slice(37, 53);
-		const aaguidHex = Array.from(aaguidBytes).map(b => b.toString(16).padStart(2, '0')).join('');
-		const aaguid = `${aaguidHex.slice(0,8)}-${aaguidHex.slice(8,12)}-${aaguidHex.slice(12,16)}-${aaguidHex.slice(16,20)}-${aaguidHex.slice(20)}`;
-
-		logToScreen('reg-output', "\nAuthenticator AAGUID: " + aaguid);
-		logToScreen('reg-output', "Sending AAGUID to backend...");
-
-		//try {
-		//	const apiResponse = await fetch('http://localhost:4000/api/lookup-aaguid', {
-		//		method: 'POST',
-		//		headers: { 'Content-Type': 'application/json' },
-		//		body: JSON.stringify({ aaguid: aaguid })
-		//	});
-		//
-		//	if (!apiResponse.ok) {
-		//		const errorData = await apiResponse.text();
-		//		throw new Error(`Backend refused (HTTP ${apiResponse.status}): ${errorData}`);
-		//	}
-		//
-		//	const resultData = await apiResponse.json();
-		//	logToScreen('reg-output', "Device Model: " + resultData.description);
-		//
-		//} catch (apiErr) {
-		//	console.error("Full Error Details:", apiErr);
-		//	logToScreen('reg-output', `Lookup failed: ${apiErr.message}`);
-		//}
-
-		const attObj = cbor.decodeFirstSync(new Uint8Array(credential.response.attestationObject));
-		console.log("Full Attestation Object:", attObj);
-
-		if (attObj.attStmt && attObj.attStmt.x5c) {
-			logToScreen('reg-output', "\nExtracting X.509 chain...");
-
-			const x5cBase64Strings = attObj.attStmt.x5c.map(certBuffer => {
-				let binary = '';
-				const bytes = new Uint8Array(certBuffer);
-				for (let i = 0; i < bytes.byteLength; i++) {
-					binary += String.fromCharCode(bytes[i]);
-				}
-				return window.btoa(binary);
-			});
-
-			const clientDataB64 = bufferToBase64url(credential.response.clientDataJSON);
-			const attObjB64 = bufferToBase64url(credential.response.attestationObject);
-
-			logToScreen('reg-output', "Sending chain and raw data to backend for secure validation...");
-
-			const verifyResponse = await fetch('http://localhost:4000/api/register', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					username: username,
-					credentialId: credential.id,
-					x5c: x5cBase64Strings,
-					aaguid: aaguid,
-					clientDataJSON: clientDataB64,
-					attestationObject: attObjB64
-				})
-			});
-
-			if (!verifyResponse.ok) {
-				const errorText = await verifyResponse.text();
-				throw new Error(`Backend validation failed: ${errorText}`);
-			}
-
-			const result = await verifyResponse.json();
-			logToScreen('reg-output', `\n ${result.message}`);
-		} else {
-			logToScreen('reg-output', "\nNo certificate chain (x5c) found in this attestation statement.");
-		}
-
-		const aesKey = await crypto.subtle.deriveKey(
-			{ name: 'HKDF', salt: new Uint8Array(), hash: 'SHA-256', info: new TextEncoder().encode('AES-GCM Vault Encryption Key V1') },
-			masterKey,
-			{ name: 'AES-GCM', length: 256 },
-			false,
-			['encrypt', 'decrypt']
-		);
-
-		logToScreen('reg-output', "\nSaved to IndexedDB!");
-		logToScreen('reg-output', "Deriving AES-GCM Vault Key...");
-
-		const masterKey = await crypto.subtle.importKey(
-			'raw', symmetricKey, 'HKDF', false, ['deriveKey']
-		);
-
-		console.log("Success! Your AES Key Object:", aesKey);
-		logToScreen('reg-output', "Registration Complete!");
-
+		await handleRegistration(username);
 	} catch (err) {
-		logToScreen('reg-output', "\n Error: " + err.message);
+		Utils.log('reg-output', `\nError: ${err.message}`);
+		console.error(err);
 	}
 });
 
-// ==========================================
-//  AUTHENTICATION LOGIC
-// ==========================================
 document.getElementById('loginBtn').addEventListener('click', async () => {
-	const logId = 'login-output';
-	logToScreen(logId, "Setting up challenge...", true);
-
-	const encryptionSalt = generateRandomChallenge();
-
 	try {
-		const publicKeyRequest = {
-			challenge: generateRandomChallenge(),
-			timeout: 60000,
-			rpId: window.location.hostname,
-			userVerification: "preferred",
-			extensions: { prf: { eval: { first: encryptionSalt } } }
-		};
-
-		logToScreen(logId, "Tap your YubiKey...");
-		const assertion = await navigator.credentials.get({ publicKey: publicKeyRequest });
-
-		const userHandle = assertion.response.userHandle;
-		if (!userHandle) throw new Error("No user handle found.");
-
-		const identifiedUsername = new TextDecoder().decode(userHandle);
-		logToScreen(logId, `Key identifies as: "${identifiedUsername}"`);
-
-		const dbUser = await dbGetUser(identifiedUsername);
-		const credID = assertion.id;
-
-		if (!dbUser) {
-			logToScreen(logId, `User "${identifiedUsername}" not found in DB. Signaling browser...`);
-			if (window.PublicKeyCredential && PublicKeyCredential.signalUnknownCredential) {
-				try {
-					await PublicKeyCredential.signalUnknownCredential({ rpId: window.location.hostname, credentialId: credID });
-				} catch (signalErr) { console.error("Signal API failed:", signalErr); }
-			}
-			throw new Error(`SECURITY ALERT: User "${identifiedUsername}" DELETED. Access Denied.`);
-		}
-
-		const extensionResults = assertion.getClientExtensionResults();
-		const prfResults = extensionResults?.prf?.results?.first;
-		if (!prfResults) throw new Error("PRF not supported/enabled.");
-
-		logToScreen(logId, "Deriving AES-GCM Vault Key...");
-
-		const masterKey = await crypto.subtle.importKey(
-			'raw', prfResults, 'HKDF', false, ['deriveKey']
-		);
-
-		const aesKey = await crypto.subtle.deriveKey(
-			{ name: 'HKDF', salt: new Uint8Array(), hash: 'SHA-256', info: new TextEncoder().encode('AES-GCM Vault Encryption Key V1') },
-			masterKey,
-			{ name: 'AES-GCM', length: 256 },
-			false,
-			['encrypt', 'decrypt']
-		);
-
-		logToScreen(logId, "\n LOGIN SUCCESSFUL!");
-		logToScreen(logId, "Welcome back, " + identifiedUsername);
-
+		await handleLogin();
 	} catch (err) {
-		logToScreen(logId, "\n " + err.message);
+		Utils.log('login-output', `\nError: ${err.message}`);
+		console.error(err);
 	}
 });
