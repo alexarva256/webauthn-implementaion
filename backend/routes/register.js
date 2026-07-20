@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const cbor = require('cbor'); // <-- Add this
+const cbor = require('cbor');
 const cache = require('../fido-mds/cache');
 const { validateAuthenticatorTrust } = require('../utils/fido-trust');
 
