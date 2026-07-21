@@ -40,7 +40,7 @@ router.post('/register', async (req, res) => {
 
     if (fidoMetadata) {
    
-      deviceName = fidoMetadata.frinedlyNames.en-Us || "Unknown FIDO Device";
+      deviceName = fidoMetadata.friendlyNames?.["en-US"] || fidoMetadata.description || "Unknown FIDO Device";
     } else if (customMetadata) {
       deviceName = customMetadata.name || "Unknown Custom Device";
     } else {
@@ -49,7 +49,7 @@ router.post('/register', async (req, res) => {
 
     console.log(`Device Identified: ${deviceName}`);
 
-    if(customMetadata === {}){
+    if(customMetadata === {}  ){
       if (x5c.length > 0) {
           const isTrusted = await validateAuthenticatorTrust(fidoMetadata, x5c);
 
